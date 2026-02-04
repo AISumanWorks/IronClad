@@ -1,0 +1,61 @@
+import yfinance as yf
+import pandas as pd
+import datetime
+
+class DataHandler:
+    """
+    Handles data fetching and processing for the IronClad Trading System.
+    Designed to be modular: yfinance can be replaced with a broker API.
+    """
+    
+    def __init__(self):
+        # Top 15 Nifty 50 stocks by weight for this implementation
+        self.tickers = [
+            "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+            "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+            "LTIM.NS", "AXISBANK.NS", "LT.NS", "BAJFINANCE.NS", "MARUTI.NS"
+        ]
+        
+    def get_nifty50_tickers(self):
+        """Returns the list of Nifty 50 tickers."""
+        return self.tickers
+
+    def fetch_data(self, ticker: str, period: str = "1mo", interval: str = "5m"):
+        """
+        Fetches historical data using yf.Ticker.history() which is more reliable for single requests.
+        """
+        try:
+            # print(f"Fetching {interval} data for {ticker}...")
+            # Use Ticker object
+            dat = yf.Ticker(ticker)
+            df = dat.history(period=period, interval=interval, auto_adjust=True)
+            
+            if df.empty:
+                # Try without auto_adjust if empty (some tickers issues)
+                df = dat.history(period=period, interval=interval, auto_adjust=False)
+                
+            if df.empty:
+                print(f"Warning: No data fetched for {ticker}")
+                return pd.DataFrame()
+
+            # Clean columns
+            df.columns = [c.lower() for c in df.columns]
+            
+            # Ensure index is datetime and localized?
+            # yfinance returns timezone-aware index usually.
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error fetching data for {ticker}: {e}")
+            return pd.DataFrame()
+
+    def get_latest_price(self, ticker: str):
+        """
+        Gets the real-time/latest close price.
+        Useful for position sizing calculations.
+        """
+        df = self.fetch_data(ticker, period="1d", interval="1m")
+        if not df.empty:
+            return df['close'].iloc[-1]
+        return None
