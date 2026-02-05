@@ -7,22 +7,23 @@ const PriceChart = ({ ticker, strategy }) => {
     const chartRef = useRef();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [debugInfo, setDebugInfo] = useState({ count: 0, w: 0, h: 0 });
 
     useEffect(() => {
-        const handleResize = () => {
+        const resizeObserver = new ResizeObserver(entries => {
+            if (entries.length === 0 || !entries[0].target) return;
+            const newRect = entries[0].contentRect;
+            setDebugInfo(prev => ({ ...prev, w: newRect.width, h: newRect.height }));
             if (chartRef.current) {
-                chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
+                chartRef.current.applyOptions({ width: newRect.width, height: newRect.height });
             }
-        };
+        });
 
-        window.addEventListener('resize', handleResize);
+        if (chartContainerRef.current) {
+            resizeObserver.observe(chartContainerRef.current);
+        }
 
-        return () => {
-            window.removeEventListener('resize', handleResize);
-            if (chartRef.current) {
-                chartRef.current.remove();
-            }
-        };
+        return () => resizeObserver.disconnect();
     }, []);
 
     useEffect(() => {
@@ -38,7 +39,7 @@ const PriceChart = ({ ticker, strategy }) => {
             // 1. Fetch Market Data
             try {
                 // Use relative path for production (served by same backend)
-                const res = await axios.get(`/data/${ticker}`);
+                const res = await axios.get(`/api/data/${ticker}`);
                 if (res.data && res.data.data) {
                     marketData = res.data.data;
                 } else {
@@ -53,7 +54,7 @@ const PriceChart = ({ ticker, strategy }) => {
 
             // 2. Fetch Predictions (Optional)
             try {
-                const res = await axios.get(`/predictions/${ticker}`);
+                const res = await axios.get(`/api/predictions/${ticker}`);
                 predictionData = res.data.predictions || [];
             } catch (err) {
                 console.warn("Could not fetch predictions:", err);
@@ -80,8 +81,8 @@ const PriceChart = ({ ticker, strategy }) => {
                         background: { type: ColorType.Solid, color: '#171717' },
                         textColor: '#a3a3a3',
                     },
-                    width: chartContainerRef.current.clientWidth,
-                    height: 500,
+                    width: chartContainerRef.current.clientWidth || 800,
+                    height: chartContainerRef.current.clientHeight || 500,
                     grid: {
                         vertLines: { color: '#262626' },
                         horzLines: { color: '#262626' },
@@ -155,6 +156,13 @@ const PriceChart = ({ ticker, strategy }) => {
                     sma50Series.setData(sma50Data);
                 }
 
+                setDebugInfo(prev => ({ ...prev, count: uniqueData.length }));
+
+                // Force fit after small delay to ensure layout is ready
+                setTimeout(() => {
+                    chart.timeScale().fitContent();
+                }, 100);
+
                 // AI Predictions Overlay
                 // Only plot if we have predictions
                 if (predictionData.length > 0) {
@@ -219,16 +227,27 @@ const PriceChart = ({ ticker, strategy }) => {
             )}
 
             {error && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-neutral-900 z-0">
-                    <p className="text-red-500 mb-2">⚠ {error}</p>
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-neutral-900 z-50 pointer-events-auto">
+                    <p className="text-red-500 mb-2 font-semibold">⚠ {error}</p>
                     <button
                         onClick={() => window.location.reload()}
-                        className="text-xs bg-neutral-800 px-3 py-1 rounded hover:bg-neutral-700 text-white"
+                        className="text-xs bg-neutral-800 px-3 py-1 rounded hover:bg-neutral-700 text-white border border-neutral-700"
                     >
                         Retry
                     </button>
+                    <div className="text-xs text-neutral-600 mt-4 font-mono text-left">
+                        Debug: {debugInfo.count} pts / {debugInfo.w}x{debugInfo.h} px
+                    </div>
                 </div>
             )}
+
+            {/* FORCE DEBUG OVERLAY TEMPORARILY */}
+            <div className="absolute top-2 right-2 bg-black/80 text-green-500 text-[10px] p-2 rounded z-20 font-mono pointer-events-none border border-neutral-700">
+                DATA: {debugInfo.count} pts<br />
+                SIZE: {Math.round(debugInfo.w)}x{Math.round(debugInfo.h)}<br />
+                TICKER: {ticker}<br />
+                LOADING: {String(loading)}
+            </div>
 
             <div ref={chartContainerRef} className="w-full h-full" />
         </div>

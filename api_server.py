@@ -44,25 +44,25 @@ app.add_middleware(
 def health_check():
     return {"status": "online", "time": datetime.now()}
 
-@app.get("/account")
+@app.get("/api/account")
 def get_account():
     return paper_trader.get_account_summary()
 
-@app.get("/portfolio")
+@app.get("/api/portfolio")
 def get_portfolio():
     return {"positions": paper_trader.get_holdings()}
 
-@app.get("/predictions/{ticker}")
+@app.get("/api/predictions/{ticker}")
 def get_predictions(ticker: str):
     """Returns AI predictions for the chart overlay."""
     return {"predictions": paper_trader.db.get_predictions(ticker)}
 
-@app.get("/stats")
+@app.get("/api/stats")
 def get_ai_stats():
     """Returns AI Accuracy Statistics."""
     return paper_trader.db.get_accuracy_stats()
 
-@app.post("/trade")
+@app.post("/api/trade")
 def execute_trade(trade: TradeRequest):
     result = paper_trader.execute_trade(
         trade.ticker, 
@@ -75,12 +75,12 @@ def execute_trade(trade: TradeRequest):
         raise HTTPException(status_code=400, detail=result["message"])
     return result
 
-@app.get("/tickers")
+@app.get("/api/tickers")
 def get_tickers():
     """Returns list of supported Nifty 50 tickers."""
     return {"tickers": data_handler.get_nifty50_tickers()}
 
-@app.get("/data/{ticker}")
+@app.get("/api/data/{ticker}")
 def get_market_data(ticker: str, period: str = "60d", interval: str = "5m"):
     """
     Returns Historical Data for Charting.
@@ -161,10 +161,12 @@ async def run_validator_loop():
     """Background task to validate predictions every 15 minutes."""
     from modules.validator import PredictionValidator
     validator = PredictionValidator()
+    loop = asyncio.get_running_loop()
     while True:
         try:
             print(f"[{datetime.now()}] Running AI Validator...")
-            validator.validate()
+            # Run blocking validator in thread pool to avoid freezing the API
+            await loop.run_in_executor(None, validator.validate)
         except Exception as e:
             print(f"Validator Error: {e}")
         
@@ -220,7 +222,7 @@ async def run_market_scanner():
                                 action="BUY",
                                 price=latest['close'],
                                 qty=10, # Fixed size for now
-                                strategy="auto_ai_sw”" # Tag it
+                                strategy="auto_ai"
                             )
                     # ---------------------------
             except Exception as e:
@@ -235,7 +237,7 @@ async def run_market_scanner():
         print(f"[{datetime.now()}] Scan Complete. Found {len(active_signals)} signals. Sleeping for 5 min...")
         await asyncio.sleep(300) # 5 minutes
 
-@app.get("/signals")
+@app.get("/api/signals")
 def get_active_signals(strategy: str = "composite"):
     """
     Returns cached signals for 'composite' strategy to be instant.

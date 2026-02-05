@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Layers, Settings, Bell } from 'lucide-react';
+import { Layers, Settings, Bell, Menu, X } from 'lucide-react';
 
 const DashboardLayout = ({ children }) => {
     const location = useLocation();
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
 
     const isActive = (path) => location.pathname === path;
 
@@ -33,12 +34,42 @@ const DashboardLayout = ({ children }) => {
                             <Settings className="w-5 h-5 text-neutral-400" />
                         </button>
                         <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-brand-500 to-purple-500"></div>
+
+                        {/* Mobile Menu Button */}
+                        <button
+                            className="md:hidden p-2 hover:bg-neutral-800 rounded-lg transition-colors"
+                            onClick={() => setIsMenuOpen(!isMenuOpen)}
+                        >
+                            {isMenuOpen ? <X className="w-6 h-6 text-white" /> : <Menu className="w-6 h-6 text-white" />}
+                        </button>
                     </div>
                 </div>
+
+                {/* Mobile Navigation Drawer */}
+                {isMenuOpen && (
+                    <div className="md:hidden bg-neutral-900 border-b border-neutral-800 animate-in slide-in-from-top-2">
+                        <nav className="flex flex-col p-4 space-y-4">
+                            <Link
+                                to="/"
+                                onClick={() => setIsMenuOpen(false)}
+                                className={`text-sm font-medium p-2 rounded-lg transition-colors ${isActive('/') ? 'bg-neutral-800 text-white' : 'text-neutral-400 hover:text-white'}`}
+                            >
+                                Dashboard
+                            </Link>
+                            <Link
+                                to="/portfolio"
+                                onClick={() => setIsMenuOpen(false)}
+                                className={`text-sm font-medium p-2 rounded-lg transition-colors ${isActive('/portfolio') ? 'bg-neutral-800 text-white' : 'text-neutral-400 hover:text-white'}`}
+                            >
+                                Portfolio
+                            </Link>
+                        </nav>
+                    </div>
+                )}
             </header>
 
             {/* Main Content */}
-            <main className="pt-24 pb-12 container mx-auto px-6">
+            <main className="pt-24 pb-12 container mx-auto px-4 md:px-6">
                 {children}
             </main>
         </div>

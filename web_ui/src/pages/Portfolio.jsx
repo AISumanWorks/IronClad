@@ -11,8 +11,8 @@ const Portfolio = () => {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const accRes = await axios.get('/account');
-                const portRes = await axios.get('/portfolio');
+                const accRes = await axios.get('/api/account');
+                const portRes = await axios.get('/api/portfolio');
                 setAccount(accRes.data);
                 setPositions(portRes.data.positions);
                 setLoading(false);
@@ -74,7 +74,7 @@ const Portfolio = () => {
                 </div>
 
                 <div className="overflow-x-auto">
-                    <table className="w-full text-left">
+                    <table className="w-full text-left whitespace-nowrap">
                         <thead className="bg-neutral-950 text-neutral-400 uppercase text-xs">
                             <tr>
                                 <th className="px-6 py-4">Ticker</th>

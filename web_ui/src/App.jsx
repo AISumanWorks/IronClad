@@ -35,11 +35,11 @@ function Dashboard() {
   // Fetch Tickers, Health & Stats
   useEffect(() => {
     // Relative paths for production
-    axios.get('/tickers')
+    axios.get('/api/tickers')
       .then(res => setTickers(res.data.tickers))
       .catch(err => console.error(err));
 
-    axios.get('/stats')
+    axios.get('/api/stats')
       .then(res => setStats(res.data))
       .catch(err => console.error(err));
 
@@ -58,12 +58,12 @@ function Dashboard() {
   // Poll Signals & Stats
   useEffect(() => {
     const fetchSignals = () => {
-      axios.get(`/signals?strategy=${strategy}`)
+      axios.get(`/api/signals?strategy=${strategy}`)
         .then(res => setSignals(res.data.signals))
         .catch(err => console.error(err));
 
       // Refresh stats occasionally
-      axios.get('/stats')
+      axios.get('/api/stats')
         .then(res => setStats(res.data))
         .catch(err => console.error(err));
     };
