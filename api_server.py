@@ -40,7 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
+@app.get("/api/health")
 def health_check():
     return {"status": "online", "time": datetime.now()}
 
@@ -313,4 +313,6 @@ async def serve_react_app(full_path: str):
         return "React Frontend not found. Run 'npm run build' in web_ui folder."
 
 if __name__ == "__main__":
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("api_server:app", host="0.0.0.0", port=port, reload=True)

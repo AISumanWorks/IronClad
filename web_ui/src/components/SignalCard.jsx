@@ -11,7 +11,7 @@ const SignalCard = ({ signal }) => {
         setLoading(true);
         setStatus(null);
         try {
-            await axios.post('http://localhost:8000/trade', {
+            await axios.post('/trade', {
                 ticker: signal.ticker,
                 action: action, // 'BUY' or 'SELL'
                 qty: 10, // Default qty for now

@@ -7,13 +7,35 @@ import os
 class DatabaseManager:
     def __init__(self, db_name="trading_bot.db"):
         # Check env var for Render/Cloud persistence
+        # Check env var for Render/Cloud persistence
         env_path = os.getenv("DB_FILE_PATH")
         if env_path:
             self.db_name = env_path
             print(f"Using Database at: {self.db_name}")
+            
+            # Ensure directory exists
+            db_dir = os.path.dirname(self.db_name)
+            if db_dir and not os.path.exists(db_dir):
+                print(f"WARNING: Directory {db_dir} does not exist. Attempting to create...")
+                try:
+                    os.makedirs(db_dir, exist_ok=True)
+                    print(f"Created directory: {db_dir}")
+                except Exception as e:
+                    print(f"CRITICAL ERROR: Could not create directory {db_dir}. Persistance might fail. Error: {e}")
+                    # Fallback to local if creation fails? 
+                    # Maybe better to crash so user fixes the mount.
         else:
             self.db_name = db_name
-        self.init_db()
+            
+        try:
+            self.init_db()
+        except sqlite3.OperationalError as e:
+            print(f"CRITICAL SQLITE ERROR: {e}")
+            print(f"Failed to open database at {self.db_name}")
+            print("Troubleshooting: Check if the directory exists and has write permissions.")
+            if "/data" in self.db_name:
+                print("RENDER TIP: Did you accidentally enable the Env Var without adding the Disk?")
+            raise e
 
     def get_connection(self):
         return sqlite3.connect(self.db_name)

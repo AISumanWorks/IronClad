@@ -34,16 +34,18 @@ function Dashboard() {
 
   // Fetch Tickers, Health & Stats
   useEffect(() => {
-    axios.get('http://localhost:8000/tickers')
+    // Relative paths for production
+    axios.get('/tickers')
       .then(res => setTickers(res.data.tickers))
       .catch(err => console.error(err));
 
-    axios.get('http://localhost:8000/stats')
+    axios.get('/stats')
       .then(res => setStats(res.data))
       .catch(err => console.error(err));
 
     const checkHealth = () => {
-      axios.get('http://localhost:8000/')
+      // Use specific health endpoint, not root (root serves React)
+      axios.get('/api/health')
         .then(() => setServerStatus("Online"))
         .catch(() => setServerStatus("Offline"));
     };
@@ -56,12 +58,12 @@ function Dashboard() {
   // Poll Signals & Stats
   useEffect(() => {
     const fetchSignals = () => {
-      axios.get(`http://localhost:8000/signals?strategy=${strategy}`)
+      axios.get(`/signals?strategy=${strategy}`)
         .then(res => setSignals(res.data.signals))
         .catch(err => console.error(err));
 
       // Refresh stats occasionally
-      axios.get('http://localhost:8000/stats')
+      axios.get('/stats')
         .then(res => setStats(res.data))
         .catch(err => console.error(err));
     };

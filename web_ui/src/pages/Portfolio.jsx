@@ -11,8 +11,8 @@ const Portfolio = () => {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const accRes = await axios.get('http://localhost:8000/account');
-                const portRes = await axios.get('http://localhost:8000/portfolio');
+                const accRes = await axios.get('/account');
+                const portRes = await axios.get('/portfolio');
                 setAccount(accRes.data);
                 setPositions(portRes.data.positions);
                 setLoading(false);

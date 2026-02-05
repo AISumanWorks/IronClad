@@ -37,7 +37,8 @@ const PriceChart = ({ ticker, strategy }) => {
 
             // 1. Fetch Market Data
             try {
-                const res = await axios.get(`http://localhost:8000/data/${ticker}`);
+                // Use relative path for production (served by same backend)
+                const res = await axios.get(`/data/${ticker}`);
                 if (res.data && res.data.data) {
                     marketData = res.data.data;
                 } else {
@@ -52,7 +53,7 @@ const PriceChart = ({ ticker, strategy }) => {
 
             // 2. Fetch Predictions (Optional)
             try {
-                const res = await axios.get(`http://localhost:8000/predictions/${ticker}`);
+                const res = await axios.get(`/predictions/${ticker}`);
                 predictionData = res.data.predictions || [];
             } catch (err) {
                 console.warn("Could not fetch predictions:", err);
