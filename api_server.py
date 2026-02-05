@@ -282,6 +282,35 @@ def scan_market_manual(strategy):
             continue
             
     return {"strategy": strategy, "signals": active_signals}
+    
+# --- FRONTEND SERVING (Full Stack) ---
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+
+# Mount Assets (JS, CSS)
+# Check if dist exists (it might not locally if not built, but we just built it)
+if os.path.exists("web_ui/dist/assets"):
+    app.mount("/assets", StaticFiles(directory="web_ui/dist/assets"), name="assets")
+
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    """
+    Serve the React App for any path not matched by the API above.
+    This enables React Router to handle client-side routing.
+    """
+    # If API path was missed above, it falls here. 
+    # But we want to ensure we don't return index.html for api 404s if possible, 
+    # but for simplicity in SPA, we often do.
+    # Check if it looks like an API call
+    if full_path.startswith("api/") or full_path.startswith("data/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+        
+    # Serve index.html
+    if os.path.exists("web_ui/dist/index.html"):
+        return FileResponse("web_ui/dist/index.html")
+    else:
+        return "React Frontend not found. Run 'npm run build' in web_ui folder."
 
 if __name__ == "__main__":
     uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
