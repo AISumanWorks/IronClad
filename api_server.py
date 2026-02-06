@@ -15,6 +15,10 @@ data_handler = DataHandler()
 strategy_engine = StrategyEngine()
 paper_trader = PaperTrader()
 
+# Initialize Sentiment Engine
+from modules.sentiment_engine import SentimentEngine, run_sentiment_scanner
+sentiment_engine = SentimentEngine()
+
 class TradeRequest(BaseModel):
     ticker: str
     action: str # BUY / SELL
@@ -25,8 +29,7 @@ class TradeRequest(BaseModel):
 # --- Global Cache ---
 MARKET_CACHE = {
     "timestamp": None,
-    "strategy": "composite",
-    "signals": []
+    "signals": {} # Keyed by strategy: "composite": [], "rsi_14": [] ...
 }
 
 app = FastAPI(title="IronClad API")
@@ -61,6 +64,14 @@ def get_predictions(ticker: str):
 def get_ai_stats():
     """Returns AI Accuracy Statistics."""
     return paper_trader.db.get_accuracy_stats()
+
+@app.get("/api/brain")
+def get_brain_stats():
+    """Returns Strategy Performance Stats (The Brain)."""
+    df = paper_trader.db.get_strategy_stats()
+    if df.empty:
+        return {"strategies": []}
+    return {"strategies": df.to_dict(orient='records')}
 
 @app.post("/api/trade")
 def execute_trade(trade: TradeRequest):
@@ -156,6 +167,10 @@ async def startup_event():
     """Start the background market scanner and validator on server startup."""
     asyncio.create_task(run_market_scanner())
     asyncio.create_task(run_validator_loop())
+    
+    # Start Sentiment Scanner
+    tickers = data_handler.get_nifty50_tickers()
+    asyncio.create_task(run_sentiment_scanner(sentiment_engine, tickers))
 
 async def run_validator_loop():
     """Background task to validate predictions every 15 minutes."""
@@ -174,81 +189,42 @@ async def run_validator_loop():
 
 async def run_market_scanner():
     """Background task to scan the market every 5 minutes."""
+    loop = asyncio.get_running_loop()
     while True:
-        print(f"[{datetime.now()}] Starting Background Market Scan...")
-        tickers = data_handler.get_nifty50_tickers()
-        active_signals = []
-        
-        # We focus on the default 'composite' strategy for the dashboard cache
-        strategy = "composite"
-        
-        for ticker in tickers:
-            try:
-                # Optimize fetch: We need enough for indicators.
-                df_5m = data_handler.fetch_data(ticker, period="5d", interval="5m")
-                if df_5m.empty: continue
-                
-                # Needed for Composite
-                df_1h = data_handler.fetch_data(ticker, period="3mo", interval="1h")
-                
-                signal, atr = strategy_engine.generate_signal(ticker, df_5m, df_1h, strategy_type=strategy)
-                
-                if signal:
-                    latest = df_5m.iloc[-1]
-                    
-                    # Confidence
-                    features = strategy_engine.add_indicators(df_5m)[['RSI', 'Dist_VWAP', 'Z_Score_VWAP', 'volume']].iloc[[-1]]
-                    conf = strategy_engine.get_ml_confidence(ticker, features)
-                    
-                    active_signals.append({
-                        "ticker": ticker,
-                        "signal": signal,
-                        "price": latest['close'],
-                        "atr": atr,
-                        "confidence": conf,
-                        "timestamp": datetime.now().isoformat()
-                    })
+        try:
+            print(f"[{datetime.now()}] Starting Background Market Scan (Threaded)...")
+            
+            # Run heavy scanning logic in a separate thread
+            new_signals = await loop.run_in_executor(None, scan_market_sync)
+            
+            # Update Cache (Safe on main thread)
+            MARKET_CACHE["signals"] = new_signals
+            MARKET_CACHE["timestamp"] = datetime.now().isoformat()
+            
+            total = sum(len(v) for v in new_signals.values())
+            print(f"[{datetime.now()}] Scan Complete. Found {total} signals. Sleeping for 5 min...")
+            
+        except Exception as e:
+            print(f"Scanner Logic Error: {e}")
 
-                    # --- AUTO-TRADING ENGINE ---
-                    # Logic: If Confidence > 70% AND No Position -> BUY
-                    if conf > 0.7:
-                        holdings = paper_trader.get_holdings()
-                        already_owned = any(h['ticker'] == ticker for h in holdings)
-                        
-                        if not already_owned:
-                            print(f"[{datetime.now()}] 🤖 AUTO-TRADE TRIGGERED: Buying {ticker} (Conf: {conf:.2f})")
-                            paper_trader.execute_trade(
-                                ticker=ticker,
-                                action="BUY",
-                                price=latest['close'],
-                                qty=10, # Fixed size for now
-                                strategy="auto_ai"
-                            )
-                    # ---------------------------
-            except Exception as e:
-                print(f"Error scanning {ticker}: {e}")
-                continue
-        
-        # Update Cache
-        MARKET_CACHE["signals"] = active_signals
-        MARKET_CACHE["timestamp"] = datetime.now().isoformat()
-        MARKET_CACHE["strategy"] = strategy
-        
-        print(f"[{datetime.now()}] Scan Complete. Found {len(active_signals)} signals. Sleeping for 5 min...")
-        await asyncio.sleep(300) # 5 minutes
+        await asyncio.sleep(300) 
 
 @app.get("/api/signals")
 def get_active_signals(strategy: str = "composite"):
     """
-    Returns cached signals for 'composite' strategy to be instant.
+    Returns cached signals for requested strategy.
     """
-    # If user asks for composite (default), return cache instantly
-    if strategy == "composite":
-        # If cache is empty (server just started), we might return empty or block once?
-        # Returning empty allows UI to load. Background task will populate it shortly.
-        return {"strategy": strategy, "signals": MARKET_CACHE["signals"], "last_updated": MARKET_CACHE["timestamp"]}
+    # Check cache first
+    cached_signals = MARKET_CACHE["signals"].get(strategy)
     
-    # Fallback for other strategies (non-cached, still blocking but rarely used on main load)
+    if cached_signals is not None:
+        return {
+            "strategy": strategy, 
+            "signals": cached_signals, 
+            "last_updated": MARKET_CACHE["timestamp"]
+        }
+    
+    # Fallback for strategies not in scanner (shouldn't happen with new logic, but safe to keep)
     return scan_market_manual(strategy)
 
 def scan_market_manual(strategy):
@@ -261,11 +237,14 @@ def scan_market_manual(strategy):
             df_5m = data_handler.fetch_data(ticker, period="5d", interval="5m")
             if df_5m.empty: continue
             
-            df_1h = pd.DataFrame() # Other strategies might not need 1H or we fetch it if needed
+            df_1h = pd.DataFrame() 
+            df_1d = pd.DataFrame()
+            
             if strategy == 'composite':
                  df_1h = data_handler.fetch_data(ticker, period="3mo", interval="1h")
+                 df_1d = data_handler.fetch_data(ticker, period="1y", interval="1d")
             
-            signal, atr = strategy_engine.generate_signal(ticker, df_5m, df_1h, strategy_type=strategy)
+            signal, atr = strategy_engine.generate_signal(ticker, df_5m, df_1h, df_1d=df_1d, strategy_type=strategy)
             
             if signal:
                 latest = df_5m.iloc[-1]
@@ -313,6 +292,83 @@ async def serve_react_app(full_path: str):
         return FileResponse("web_ui/dist/index.html")
     else:
         return "React Frontend not found. Run 'npm run build' in web_ui folder."
+
+def scan_market_sync():
+    """Synchronous function containing the heavy market scanning logic."""
+    STRATEGIES = ['composite', 'orb', 'supertrend', 'macd', 'bollinger', 'candlestick_pattern', 'rsi_14', 'rsi_9_aggressive', 'rsi_21_conservative']
+    
+    tickers = data_handler.get_nifty50_tickers()
+    
+    # --- FETCH SECTOR INDICES (Context for Phase 4) ---
+    sector_data = {}
+    try:
+         bank_nifty = data_handler.fetch_data('^NSEBANK', period="5d", interval="5m")
+         if not bank_nifty.empty: sector_data['^NSEBANK'] = bank_nifty
+         
+         nifty_50 = data_handler.fetch_data('^NSEI', period="5d", interval="5m")
+         if not nifty_50.empty: sector_data['^NSEI'] = nifty_50
+    except Exception as e:
+         print(f"Error fetching sector indices: {e}")
+    
+    new_signals = {s: [] for s in STRATEGIES}
+    
+    for ticker in tickers:
+        try:
+            df_5m = data_handler.fetch_data(ticker, period="5d", interval="5m")
+            if df_5m.empty: continue
+            
+            if strategy_engine.models.get(ticker) is None:
+                strategy_engine.train_model(ticker, df_5m)
+
+            df_1h = data_handler.fetch_data(ticker, period="3mo", interval="1h")
+            df_1d = data_handler.fetch_data(ticker, period="1y", interval="1d")
+            
+            sentiment_score = 0
+            try: 
+                if 'sentiment_engine' in globals():
+                    sentiment_score = sentiment_engine.get_sentiment(ticker)
+            except: pass
+            
+            for strategy in STRATEGIES:
+                try:
+                    signal, atr = strategy_engine.generate_signal(
+                        ticker, df_5m, df_1h, df_1d=df_1d, strategy_type=strategy,
+                        sector_data=sector_data, sentiment_score=sentiment_score
+                    )
+                    
+                    if signal:
+                        latest = df_5m.iloc[-1]
+                        features = strategy_engine.add_indicators(df_5m)[['RSI', 'Dist_VWAP', 'Z_Score_VWAP', 'volume']].iloc[[-1]]
+                        conf = strategy_engine.get_ml_confidence(ticker, features)
+                        
+                        sig_obj = {
+                            "ticker": ticker, "signal": signal, "price": latest['close'],
+                            "atr": atr, "confidence": conf, "sentiment": sentiment_score,
+                            "timestamp": datetime.now().isoformat(), "strategy": strategy
+                        }
+                        new_signals[strategy].append(sig_obj)
+
+                        # --- AUTO-TRADING ENGINE ---
+                        if strategy == 'composite' and conf > 0.60:
+                            holdings = paper_trader.get_holdings()
+                            already_owned = any(h['ticker'] == ticker for h in holdings)
+                            
+                            if not already_owned:
+                                qty = 10
+                                if conf < 0.70: qty = 5
+                                elif conf > 0.90: qty = 20
+                                elif conf > 0.80: qty = 15
+                                print(f"[{datetime.now()}] 🤖 AUTO-TRADE TRIGGERED: Buying {ticker} (Conf: {conf:.2f}, Qty: {qty})")
+                                paper_trader.execute_trade(ticker, "BUY", latest['close'], qty, "auto_ai")
+                            
+                            elif already_owned and signal == "SELL":
+                                current_qty = next(h['qty'] for h in holdings if h['ticker'] == ticker)
+                                print(f"[{datetime.now()}] 🤖 AUTO-TRADE TRIGGERED: Selling {ticker} (Signal: SELL, Qty: {current_qty})")
+                                paper_trader.execute_trade(ticker, "SELL", latest['close'], current_qty, "auto_ai")
+                except: continue
+        except: continue
+            
+    return new_signals
 
 if __name__ == "__main__":
     import os

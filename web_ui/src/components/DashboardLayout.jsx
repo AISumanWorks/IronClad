@@ -23,6 +23,7 @@ const DashboardLayout = ({ children }) => {
                     <nav className="hidden md:flex items-center space-x-8">
                         <Link to="/" className={`text-sm font-medium transition-colors ${isActive('/') ? 'text-white' : 'text-neutral-400 hover:text-white'}`}>Dashboard</Link>
                         <Link to="/portfolio" className={`text-sm font-medium transition-colors ${isActive('/portfolio') ? 'text-white' : 'text-neutral-400 hover:text-white'}`}>Portfolio</Link>
+                        <Link to="/brain" className={`text-sm font-medium transition-colors ${isActive('/brain') ? 'text-brand-500' : 'text-neutral-400 hover:text-brand-500'}`}>🧠 The Brain</Link>
                     </nav>
 
                     <div className="flex items-center space-x-4">
@@ -62,6 +63,13 @@ const DashboardLayout = ({ children }) => {
                                 className={`text-sm font-medium p-2 rounded-lg transition-colors ${isActive('/portfolio') ? 'bg-neutral-800 text-white' : 'text-neutral-400 hover:text-white'}`}
                             >
                                 Portfolio
+                            </Link>
+                            <Link
+                                to="/brain"
+                                onClick={() => setIsMenuOpen(false)}
+                                className={`text-sm font-medium p-2 rounded-lg transition-colors ${isActive('/brain') ? 'bg-neutral-800 text-brand-500' : 'text-neutral-400 hover:text-brand-500'}`}
+                            >
+                                🧠 The Brain
                             </Link>
                         </nav>
                     </div>

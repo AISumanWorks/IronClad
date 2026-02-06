@@ -1,8 +1,9 @@
 import pandas as pd
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.impute import SimpleImputer
 import warnings
 from modules.db_manager import DatabaseManager
@@ -19,6 +20,7 @@ class StrategyEngine:
     
     def __init__(self):
         self.models = {} # Dictionary to hold models per ticker
+        self.scalers = {} # Dictionary to hold scalers per ticker (Critical for NN)
         self.imputer = SimpleImputer(strategy='mean')
         self.min_training_samples = 100
         self.db = DatabaseManager()
@@ -48,9 +50,13 @@ class StrategyEngine:
         true_range = ranges.max(axis=1)
         df['ATR'] = true_range.rolling(window=14).mean()
         
+        # FILL ATR NaNs to prevent Supertrend from failing
+        df['ATR'] = df['ATR'].bfill().ffill()
+        
         # Helper: VWAP
-        # Cumulative VWAP: sum(Price * Vol) / sum(Vol)
-        df['VWAP'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+        v = df['volume'].values
+        tp = (df['high'] + df['low'] + df['close']) / 3
+        df['VWAP'] = (tp * v).cumsum() / v.cumsum()
             
         # Reversion Bands (VWAP +/- 2 SD)
         df['Dist_VWAP'] = df['close'] - df['VWAP']
@@ -59,6 +65,55 @@ class StrategyEngine:
 
         # Supertrend (10, 3)
         df = self.add_supertrend(df, period=10, multiplier=3)
+        
+        # ADX (Trend Strength)
+        df = self.add_adx(df, period=14)
+        
+        return df
+
+    def add_adx(self, df, period=14):
+        """
+        Calculates ADX (Average Directional Index).
+        """
+        if len(df) < period + 1:
+            df['ADX'] = 0
+            return df
+            
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        # 1. Calculate TR (already done in ATR but let's be self-contained or reuse)
+        # Reuse logic for speed if possible, but safe to recalc
+        tr0 = abs(high - low)
+        tr1 = abs(high - close.shift())
+        tr2 = abs(low - close.shift())
+        tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
+        
+        # 2. Directional Movement
+        up_move = high - high.shift()
+        down_move = low.shift() - low
+        
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        # 3. Smooth (Wilder's Smoothing)
+        # alpha = 1/period
+        tr_smooth = pd.Series(tr).ewm(alpha=1/period, min_periods=period).mean()
+        plus_dm_smooth = pd.Series(plus_dm).ewm(alpha=1/period, min_periods=period).mean()
+        minus_dm_smooth = pd.Series(minus_dm).ewm(alpha=1/period, min_periods=period).mean()
+        
+        # 4. DI
+        plus_di = 100 * (plus_dm_smooth / tr_smooth)
+        minus_di = 100 * (minus_dm_smooth / tr_smooth)
+        
+        # 5. DX and ADX
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.ewm(alpha=1/period, min_periods=period).mean()
+        
+        df['ADX'] = adx
+        df['Plus_DI'] = plus_di
+        df['Minus_DI'] = minus_di
         
         return df
 
@@ -85,6 +140,7 @@ class StrategyEngine:
         tr2 = abs(low - close.shift())
         tr = pd.concat([tr0, tr1, tr2], axis=1).max(axis=1)
         atr = tr.rolling(period).mean()
+        atr = atr.bfill().ffill()
         
         hl2 = (high + low) / 2
         basic_upper = hl2 + (multiplier * atr)
@@ -155,12 +211,11 @@ class StrategyEngine:
 
     def train_model(self, ticker: str, df: pd.DataFrame):
         """
-        Trains a RandomForestClassifier for the specific ticker.
+        Trains a Multi-Layer Perceptron (Neural Network) for the specific ticker.
         """
         data, features = self.prepare_ml_data(df.copy())
         
         if len(data) < self.min_training_samples:
-            # print(f"Not enough data to train ML for {ticker}")
             self.models[ticker] = None
             return
 
@@ -175,44 +230,40 @@ class StrategyEngine:
             self.models[ticker] = None
             return
 
-        # Optimization: Grid Search for better precision
-        # We want to maximize Precision (Accuracy of Buy signals)
-        param_grid = {
-            'n_estimators': [50, 100, 200],
-            'max_depth': [3, 5, 10],
-            'min_samples_split': [2, 5, 10],
-            'class_weight': ['balanced', None] # Handle imbalance
-        }
+        # --- NEURAL NETWORK PIPELINE ---
         
-        # specific scoring for trading: precision of the positive class (1)
-        # We use TimeSeriesSplit to respect time order (though GridSearch usually uses KFold, standard splits risk leakage)
-        # But for simple tuning here, KFold is okay if data is shuffled? No, financial data.
-        # Use TimeSeriesSplit
+        # 1. Scale Data (Essential for NNs to converge)
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        self.scalers[ticker] = scaler # Save scaler for inference
         
-        tscv = TimeSeriesSplit(n_splits=3)
-        
-        base_clf = RandomForestClassifier(random_state=42)
-        
-        grid_search = GridSearchCV(
-            estimator=base_clf,
-            param_grid=param_grid,
-            scoring='precision', # Prioritize being RIGHT when Buying
-            cv=tscv,
-            n_jobs=1, # Avoid threading issues in loops
-            verbose=0
+        # 2. Define Architecture
+        # Hidden Layer 1: 100 Neurons (Feature Extraction)
+        # Hidden Layer 2: 50 Neurons (Pattern Synthesis)
+        # Activation: ReLU (Biological Standard)
+        # Solver: Adam (Adaptive Learning Rate)
+        mlp = MLPClassifier(
+            hidden_layer_sizes=(100, 50), 
+            activation='relu', 
+            solver='adam', 
+            alpha=0.0001, # L2 Regularization
+            batch_size='auto', 
+            learning_rate='adaptive', 
+            learning_rate_init=0.001, 
+            max_iter=500, 
+            random_state=42,
+            early_stopping=True, # Prevent Overfitting
+            validation_fraction=0.1,
+            n_iter_no_change=10
         )
         
         try:
-             grid_search.fit(X, y)
-             best_model = grid_search.best_estimator_
-             self.models[ticker] = best_model
-             # print(f"Optimized Model for {ticker}. Best Params: {grid_search.best_params_}")
+             mlp.fit(X_scaled, y)
+             self.models[ticker] = mlp
+             # print(f"[{ticker}] Neural Network Trained. Loss: {mlp.loss_:.4f}")
         except Exception as e:
-             # Fallback
-             # print(f"GridSearch failed for {ticker}: {e}. Using default.")
-             clf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-             clf.fit(X, y)
-             self.models[ticker] = clf
+             # print(f"NN Training failed for {ticker}: {e}")
+             self.models[ticker] = None
 
     def get_ml_confidence(self, ticker: str, current_features: pd.DataFrame):
         """Returns the probability of the positive class (Buy)."""
@@ -221,11 +272,34 @@ class StrategyEngine:
             return 0.5 # Neutral
             
         try:
-            # Ensure shape matches
-            prob = model.predict_proba(current_features)[:, 1] # Probability of class 1
+            # Scale features using the saved scaler for this ticker
+            scaler = self.scalers.get(ticker)
+            if scaler is None:
+                return 0.5
+                
+            features_scaled = scaler.transform(current_features)
+            
+            # Predict
+            prob = model.predict_proba(features_scaled)[:, 1] # Probability of class 1
             return prob[0]
         except:
             return 0.5
+
+    def check_macro_trend(self, df_1d: pd.DataFrame):
+        """
+        Calculates the 200-day EMA on Daily data.
+        Returns: 'BULLISH' if Close > EMA200, 'BEARISH' if Close < EMA200
+        """
+        if df_1d.empty or len(df_1d) < 200:
+            return 'NEUTRAL' # Not enough data
+            
+        ema_200 = df_1d['close'].ewm(span=200, adjust=False).mean().iloc[-1]
+        current_close = df_1d['close'].iloc[-1]
+        
+        if current_close > ema_200:
+            return 'BULLISH'
+        else:
+            return 'BEARISH'
 
     def analyze_1h_trend(self, df_1h: pd.DataFrame):
         """
@@ -243,6 +317,30 @@ class StrategyEngine:
         elif last['close'] < last['SMA_50']:
             return 'BEARISH'
         return 'SIDEWAYS'
+
+    # --- PARAMETER MUTATIONS (The Arena) ---
+    def strategy_rsi(self, df_5m, period=14, low_threshold=30, high_threshold=70):
+        """
+        Pure RSI Strategy with variable parameters.
+        """
+        # Calculate specific RSI if needed (default in add_indicators is 14)
+        rsi_col = 'RSI'
+        if period != 14:
+            # Custom calc on the fly
+            delta = df_5m['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            rsi_values = 100 - (100 / (1 + rs))
+            current = rsi_values.iloc[-1]
+        else:
+            current = df_5m['RSI'].iloc[-1]
+            
+        if current < low_threshold:
+            return "BUY"
+        elif current > high_threshold:
+            return "SELL"
+        return None
 
     def strategy_reversion_antigravity(self, ticker, df_5m, trend_1h, latest):
         """Original IronClad Strategy: VWAP Reversion + VPA."""
@@ -335,10 +433,157 @@ class StrategyEngine:
             
         return None
 
-    def generate_signal(self, ticker: str, df_5m: pd.DataFrame, df_1h: pd.DataFrame, strategy_type='composite'):
+    # --- NEW STRATEGIES (MACD & Bollinger) ---
+    def strategy_macd(self, df_5m):
+        """
+        MACD Momentum Strategy.
+        Buy when MACD Line crosses above Signal Line.
+        """
+        # Calculate MACD (12, 26, 9)
+        exp1 = df_5m['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df_5m['close'].ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal_line = macd.ewm(span=9, adjust=False).mean()
+        
+        # Check Crossover
+        if len(macd) < 2: return None
+        
+        curr_macd = macd.iloc[-1]
+        curr_sig = signal_line.iloc[-1]
+        prev_macd = macd.iloc[-2]
+        prev_sig = signal_line.iloc[-2]
+        
+        # Bullish Crossover
+        if prev_macd <= prev_sig and curr_macd > curr_sig:
+             return "BUY"
+        # Bearish Crossover
+        elif prev_macd >= prev_sig and curr_macd < curr_sig:
+             return "SELL"
+             
+        return None
+
+        return None
+
+    def strategy_bollinger(self, df_5m):
+        """
+        Bollinger Band Squeeze/Breakout.
+        Buy if price closes above Upper Band.
+        """
+        # Calculate Bands (20, 2)
+        sma = df_5m['close'].rolling(window=20).mean()
+        std = df_5m['close'].rolling(window=20).std()
+        upper = sma + (std * 2)
+        lower = sma - (std * 2)
+        
+        if len(upper) < 1: return None
+        
+        close = df_5m['close'].iloc[-1]
+        
+        if close > upper.iloc[-1]:
+            return "BUY"
+        elif close < lower.iloc[-1]:
+            return "SELL"
+            
+        return None
+        
+    def strategy_candlestick(self, df_5m):
+        """
+        Candlestick Pattern Recognition (Hammer & Shooting Star).
+        """
+        if len(df_5m) < 3: return None
+        
+        last = df_5m.iloc[-1]
+        
+        # Candle Parts
+        body = abs(last['close'] - last['open'])
+        upper_wick = last['high'] - max(last['close'], last['open'])
+        lower_wick = min(last['close'], last['open']) - last['low']
+        
+        # 1. HAMMER (Bullish Reversal)
+        # - Small body
+        # - Long lower wick (at least 2x body)
+        # - Small upper wick
+        if lower_wick > (2 * body) and upper_wick < body:
+             # Confirmation: Previous trend should be down?
+             # For now, raw pattern signal
+             return "BUY"
+             
+        # 2. SHOOTING STAR (Bearish Reversal)
+        # - Small body
+        # - Long upper wick (at least 2x body)
+        # - Small lower wick
+        elif upper_wick > (2 * body) and lower_wick < body:
+             return "SELL"
+             
+        return None
+        
+    def check_sector_correlation(self, ticker: str, signal: str, sector_data: dict, df_5m: pd.DataFrame):
+        """
+        Phase 4: Sector Correlation.
+        Returns False if trade should be VETOED.
+        """
+        # 1. Define Map
+        # In a real app, this should be in a config or DB
+        SECTOR_MAP = {
+            'HDFCBANK.NS': '^NSEBANK',
+            'ICICIBANK.NS': '^NSEBANK',
+            'SBIN.NS': '^NSEBANK',
+            'AXISBANK.NS': '^NSEBANK',
+            'KOTAKBANK.NS': '^NSEBANK',
+            'INDUSINDBK.NS': '^NSEBANK',
+            # Add IT sector if we had ^CNXIT
+        }
+        
+        sector_ticker = SECTOR_MAP.get(ticker)
+        
+        # Also Check General Market (Nifty 50) for all stocks
+        # If Nifty is crashing (-1% intraday), Buying anything is risky
+        nifty_data = sector_data.get('^NSEI')
+        if nifty_data is not None and not nifty_data.empty:
+             nifty_change = (nifty_data['close'].iloc[-1] - nifty_data['open'].iloc[0]) / nifty_data['open'].iloc[0]
+             # Hard Crash Veto (> 1% drop)
+             if nifty_change < -0.01 and signal == 'BUY':
+                 print(f"[{ticker}] BUY Vetoed: Market Crash (^NSEI down {nifty_change*100:.2f}%)")
+                 return False
+        
+        if not sector_ticker:
+            return True # No specific sector to check
+            
+        sector_df = sector_data.get(sector_ticker)
+        if sector_df is None or sector_df.empty:
+            return True # No data, proceed
+            
+        # Check Sector Trend (Simple 5m slope or stored ADX?)
+        # Let's compute simple correlation of direction
+        sec_open = sector_df['open'].iloc[-1]
+        sec_close = sector_df['close'].iloc[-1]
+        
+        # If Signal is BUY, Sector should not be RED candle? 
+        # Or better: Sector should be above its VWAP?
+        # Let's stick to the Plan: "If ^NSEBANK is -1%, VETO"
+        
+        # Calculate Sector Intraday Change
+        # Assuming df covers today, let's look at last few candles
+        # Last 30 mins change?
+        if len(sector_df) < 6: return True
+        
+        recent_change = (sector_df['close'].iloc[-1] - sector_df['close'].iloc[-6]) / sector_df['close'].iloc[-6]
+        
+        if signal == 'BUY':
+            if recent_change < -0.002: # Sector down 0.2% in last 30 mins (Momentum is down)
+                print(f"[{ticker}] BUY Vetoed: Sector {sector_ticker} Falling ({recent_change*100:.2f}%)")
+                return False
+        elif signal == 'SELL':
+            if recent_change > 0.002: # Sector up 0.2% in last 30 mins
+                print(f"[{ticker}] SELL Vetoed: Sector {sector_ticker} Rising ({recent_change*100:.2f}%)")
+                return False
+                
+        return True
+
+    def generate_signal(self, ticker: str, df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_1d: pd.DataFrame = None, strategy_type='composite', sector_data=None, sentiment_score=0.0):
         """
         Core Decision Logic.
-        Supported Strategies: 'composite' (Antigravity), 'orb', 'supertrend', 'ma_crossover'
+        Supported Strategies: 'composite', 'orb', 'supertrend', 'ma_crossover', 'macd', 'bollinger', 'candlestick_pattern'
         """
         if df_5m.empty or len(df_5m) < 20:
             return None, 0
@@ -364,6 +609,80 @@ class StrategyEngine:
             
         elif strategy_type == 'ma_crossover':
             signal = self.strategy_ma_crossover(df_5m)
+            
+        elif strategy_type == 'macd':
+            signal = self.strategy_macd(df_5m)
+            
+        elif strategy_type == 'bollinger':
+            signal = self.strategy_bollinger(df_5m)
+            
+        elif strategy_type == 'candlestick_pattern':
+            signal = self.strategy_candlestick(df_5m)
+            
+        # --- SHADOW STRATEGIES ---
+        elif strategy_type == 'rsi_14':
+            signal = self.strategy_rsi(df_5m, period=14, low_threshold=30, high_threshold=70)
+        elif strategy_type == 'rsi_9_aggressive':
+            signal = self.strategy_rsi(df_5m, period=9, low_threshold=25, high_threshold=75)
+        elif strategy_type == 'rsi_21_conservative':
+            signal = self.strategy_rsi(df_5m, period=21, low_threshold=30, high_threshold=70)
+
+        # --- PHASE 5: SENTIMENT FILTER (The "Ears") ---
+        # If Sentiment is Very Negative, VETO BUY.
+        # If Sentiment is Very Positive, VETO SELL (optional, but let's be safe).
+        if sentiment_score < -0.2 and signal == 'BUY':
+             print(f"[{ticker}] BUY Vetoed: Negative Sentiment ({sentiment_score:.2f})")
+             signal = None
+        elif sentiment_score > 0.2 and signal == 'SELL':
+             # print(f"[{ticker}] SELL Vetoed: Positive Sentiment ({sentiment_score:.2f})")
+             # Actually, for Sell signals we might not want to be as strict unless Shorting.
+             # But if we hold a stock and it says SELL but sentiment is super high, maybe hold?
+             # For now, let's keep it symmetric.
+             signal = None
+             
+        if not signal:
+             return None, 0
+
+        # --- PHASE 3: MACRO TREND FILTER (The "Brain") ---
+        # If the Daily Trend is BEARISH, we forbid BUY signals (Long-only bot)
+        if df_1d is not None and not df_1d.empty:
+            macro_trend = self.check_macro_trend(df_1d)
+            if macro_trend == 'BEARISH' and signal == 'BUY':
+                print(f"[{ticker}] Trade filtered by MACRO TREND (Daily Bearish)")
+                signal = None
+            elif macro_trend == 'BULLISH' and signal == 'SELL':
+                pass
+
+        # --- PHASE 4: MARKET REGIME FILTER (Context Awareness) ---
+        if signal:
+            current_adx = df_5m['ADX'].iloc[-1]
+            regime = 'NEUTRAL'
+            if current_adx > 25: regime = 'TRENDING'
+            elif current_adx < 20: regime = 'RANGING'
+            
+            if regime == 'TRENDING':
+                if strategy_type in ['bollinger', 'rsi_14', 'rsi_9_aggressive']:
+                    p_di = df_5m['Plus_DI'].iloc[-1]
+                    m_di = df_5m['Minus_DI'].iloc[-1]
+                    trend_dir = "UP" if p_di > m_di else "DOWN"
+                    if trend_dir == "UP" and signal == "SELL":
+                        print(f"[{ticker}] SELL Signal vetoed by Strong Bull Trend (ADX {current_adx:.1f})")
+                        signal = None
+                    elif trend_dir == "DOWN" and signal == "BUY":
+                        print(f"[{ticker}] BUY Signal vetoed by Strong Bear Trend (ADX {current_adx:.1f})")
+                        signal = None
+                        
+            elif regime == 'RANGING':
+                if strategy_type in ['supertrend', 'macd', 'ma_crossover']:
+                    # Trend following dies in chop.
+                    print(f"[{ticker}] Trend Strategy ({strategy_type}) filtered by CHOPPY Market (ADX {current_adx:.1f})")
+                    signal = None
+
+        # --- PHASE 4.2: SECTOR CORRELATION FILTER ---
+        if signal and sector_data:
+            allowed = self.check_sector_correlation(ticker, signal, sector_data, df_5m)
+            if not allowed:
+                signal = None
 
         # --- ML Confirmation & Logging (Applied to ALL strategies) ---
         features_now = df_5m[['RSI', 'Dist_VWAP', 'Z_Score_VWAP', 'volume']].iloc[[-1]]

@@ -109,6 +109,20 @@ class DatabaseManager:
                 )
             '''))
             
+            # Strategy Performance Table (The Brain)
+            conn.execute(text(f'''
+                CREATE TABLE IF NOT EXISTS strategy_stats (
+                    strategy TEXT PRIMARY KEY,
+                    total_trades INTEGER DEFAULT 0,
+                    wins INTEGER DEFAULT 0,
+                    losses INTEGER DEFAULT 0,
+                    win_rate REAL DEFAULT 0.0,
+                    avg_pnl REAL DEFAULT 0.0,
+                    trust_score REAL DEFAULT 0.5,
+                    last_updated TIMESTAMP
+                )
+            '''))
+            
             # Migrations (Add columns if missing)
             # SQLite doesn't support IF EXISTS in ALTER COLUMN easily, so we try-except
             for col_sql in [
@@ -217,7 +231,7 @@ class DatabaseManager:
             # Param style for pandas read_sql might depend on driver, but usually safe to use params arg matches DB style
             # SQLAlchemy handles params mostly
             df = pd.read_sql_query(
-                "SELECT * FROM predictions WHERE ticker = %(t)s ORDER BY timestamp DESC LIMIT 100", 
+                "SELECT * FROM predictions WHERE ticker = :t ORDER BY timestamp DESC LIMIT 100", 
                 self.engine, 
                 params={"t": ticker}
             )
@@ -231,3 +245,56 @@ class DatabaseManager:
         except Exception as e:
             print(f"DB Error get_predictions: {e}")
             return []
+    def update_strategy_stats(self, strategy, outcome, pnl_pct):
+        """
+        Updates the 'Brain' on how a strategy performed.
+        """
+        with self.get_connection() as conn:
+            # Check if exists
+            row = conn.execute(text("SELECT * FROM strategy_stats WHERE strategy = :s"), {"s": strategy}).fetchone()
+            
+            if not row:
+                conn.execute(text("INSERT INTO strategy_stats (strategy, trust_score) VALUES (:s, 0.5)"), {"s": strategy})
+                row = [strategy, 0, 0, 0, 0.0, 0.0, 0.5, None] # Default values
+                
+            # Current values
+            # SQLite fetchone returns tuple: (strategy, total, wins, losses, win_rate, avg_pnl, trust_score, ts)
+            # We need to map by index since using raw sql text
+            # Indices based on CREATE TABLE order:
+            # 0: strategy, 1: total, 2: wins, 3: losses, 4: win_rate, 5: avg_pnl, 6: trust_score
+            
+            total = row[1] + 1
+            wins = row[2] + (1 if outcome == 'CORRECT' else 0)
+            losses = row[3] + (1 if outcome == 'WRONG' else 0)
+            
+            # Rolling Average PnL (Simple approx)
+            current_avg_pnl = row[5]
+            new_avg_pnl = ((current_avg_pnl * (total - 1)) + pnl_pct) / total
+            
+            win_rate = (wins / total * 100) if total > 0 else 0
+            
+            # TRUST SCORE ENGINE
+            # Start at 0.5. Max 1.0. Min 0.1.
+            # Win increases score, Loss decreases.
+            # We use a learning rate of 0.05
+            current_score = row[6]
+            if outcome == 'CORRECT':
+                new_score = min(1.0, current_score + 0.05)
+            elif outcome == 'WRONG':
+                new_score = max(0.1, current_score - 0.05)
+            else:
+                new_score = current_score # Neutral
+                
+            conn.execute(text('''
+                UPDATE strategy_stats 
+                SET total_trades = :t, wins = :w, losses = :l, 
+                    win_rate = :wr, avg_pnl = :ap, trust_score = :ts, last_updated = :time
+                WHERE strategy = :s
+            '''), {
+                "t": total, "w": wins, "l": losses, "wr": win_rate, 
+                "ap": new_avg_pnl, "ts": new_score, "time": datetime.now(), "s": strategy
+            })
+            conn.commit()
+
+    def get_strategy_stats(self):
+        return pd.read_sql_query("SELECT * FROM strategy_stats ORDER BY trust_score DESC", self.engine)

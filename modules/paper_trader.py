@@ -16,7 +16,7 @@ class PaperTrader:
             equity += (positions['qty'] * positions['avg_price']).sum()
             
         return {
-            "balance": balance,
+            "cash": balance,
             "equity": equity,
             "positions_count": len(positions)
         }

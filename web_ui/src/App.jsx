@@ -5,6 +5,7 @@ import PriceChart from './components/PriceChart';
 import StrategySelector from './components/StrategySelector';
 import SignalCard from './components/SignalCard';
 import Portfolio from './pages/Portfolio';
+import BrainDashboard from './pages/BrainDashboard';
 import { Activity, BarChart2, TrendingUp, Cpu, Server } from 'lucide-react';
 import axios from 'axios';
 
@@ -150,6 +151,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/portfolio" element={<Portfolio />} />
+        <Route path="/brain" element={<BrainDashboard />} />
       </Routes>
     </BrowserRouter>
   );

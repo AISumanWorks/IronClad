@@ -57,5 +57,8 @@ class PredictionValidator:
                 
                 self.db.update_prediction_result(row['id'], outcome, current_price, pnl)
                 
+                # Feedback to the Brain
+                self.db.update_strategy_stats(row['strategy'], outcome, pnl)
+                
             except Exception as e:
                 print(f"Error validating prediction {row['id']}: {e}")

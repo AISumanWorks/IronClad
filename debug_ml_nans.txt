@@ -1,0 +1,22 @@
+open                   0
+high                   0
+low                    0
+close                  0
+volume                 0
+dividends              0
+stock splits           0
+SMA_20                19
+SMA_50                49
+SMA_200              199
+RSI                   13
+ATR                    0
+VWAP                   0
+Dist_VWAP              0
+Dist_VWAP_Std         19
+Z_Score_VWAP          19
+Supertrend             0
+Supertrend_Signal      0
+ADX                   26
+Plus_DI               13
+Minus_DI              13
+dtype: int64

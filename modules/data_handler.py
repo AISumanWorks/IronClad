@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import datetime
+import time
 
 class DataHandler:
     """
@@ -13,7 +14,8 @@ class DataHandler:
         self.tickers = [
             "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
             "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
-            "LTIM.NS", "AXISBANK.NS", "LT.NS", "BAJFINANCE.NS", "MARUTI.NS"
+            "LTIM.NS", "AXISBANK.NS", "LT.NS", "BAJFINANCE.NS", "MARUTI.NS",
+            "^NSEI", "^NSEBANK"
         ]
         
     def get_nifty50_tickers(self):
@@ -24,31 +26,40 @@ class DataHandler:
         """
         Fetches historical data using yf.Ticker.history() which is more reliable for single requests.
         """
-        try:
-            # print(f"Fetching {interval} data for {ticker}...")
-            # Use Ticker object
-            dat = yf.Ticker(ticker)
-            df = dat.history(period=period, interval=interval, auto_adjust=True)
-            
-            if df.empty:
-                # Try without auto_adjust if empty (some tickers issues)
-                df = dat.history(period=period, interval=interval, auto_adjust=False)
+        for attempt in range(3):
+            try:
+                # print(f"Fetching {interval} data for {ticker} (Attempt {attempt+1})...")
+                # Use Ticker object
+                dat = yf.Ticker(ticker)
                 
-            if df.empty:
-                print(f"Warning: No data fetched for {ticker}")
-                return pd.DataFrame()
+                # Check if we got a valid object
+                if dat is None:
+                    continue
 
-            # Clean columns
-            df.columns = [c.lower() for c in df.columns]
-            
-            # Ensure index is datetime and localized?
-            # yfinance returns timezone-aware index usually.
-            
-            return df
-            
-        except Exception as e:
-            print(f"Error fetching data for {ticker}: {e}")
-            return pd.DataFrame()
+                df = dat.history(period=period, interval=interval, auto_adjust=True)
+                
+                if df is None or df.empty:
+                    # Try without auto_adjust if empty (some tickers issues)
+                    df = dat.history(period=period, interval=interval, auto_adjust=False)
+                    
+                if df is None or df.empty:
+                    # print(f"Warning: No data fetched for {ticker}")
+                    time.sleep(1)
+                    continue
+
+                # Clean columns
+                df.columns = [c.lower() for c in df.columns]
+                
+                # Ensure index is datetime and localized?
+                # yfinance returns timezone-aware index usually.
+                
+                return df
+                
+            except Exception as e:
+                print(f"Error fetching data for {ticker}: {e}")
+                time.sleep(1)
+        
+        return pd.DataFrame()
 
     def get_latest_price(self, ticker: str):
         """
