@@ -215,6 +215,9 @@ const PriceChart = ({ ticker, strategy }) => {
         };
 
         fetchData();
+        const interval = setInterval(fetchData, 5000); // Poll every 5 seconds for live candles
+
+        return () => clearInterval(interval);
 
     }, [ticker, strategy]);
 

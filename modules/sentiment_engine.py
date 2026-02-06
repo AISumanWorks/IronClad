@@ -72,11 +72,13 @@ async def run_sentiment_scanner(sentiment_engine, tickers):
     """
     Background loop to update sentiment every hour.
     """
+    loop = asyncio.get_running_loop()
     while True:
         print(f"[{datetime.now()}] 👂 Scanning News Sentiment...")
         for ticker in tickers:
             # We don't want to spam requests, so small delay
-            sentiment_engine.get_sentiment(ticker)
+            # Run blocking call in thread pool
+            await loop.run_in_executor(None, sentiment_engine.get_sentiment, ticker)
             await asyncio.sleep(2) # 2 seconds between requests
             
         await asyncio.sleep(3600) # Sleep for 1 hour

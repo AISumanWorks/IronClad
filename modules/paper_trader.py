@@ -59,3 +59,14 @@ class PaperTrader:
 
     def get_holdings(self):
         return self.db.get_portfolio().to_dict(orient='records')
+
+    def get_history(self):
+        df = self.db.get_trade_history()
+        if df.empty: return []
+        
+        # Sanitize for JSON: Replace Infinity and NaN with None
+        # Note: JSON standard doesn't support Infinity or NaN
+        import numpy as np
+        df.replace([np.inf, -np.inf, np.nan], None, inplace=True)
+        
+        return df.to_dict(orient='records')

@@ -2,6 +2,7 @@ from modules.db_manager import DatabaseManager
 from modules.data_handler import DataHandler
 from datetime import datetime, timedelta
 import pandas as pd
+from modules.system_logger import logger
 
 class PredictionValidator:
     def __init__(self):
@@ -17,7 +18,7 @@ class PredictionValidator:
         if pending.empty:
             return 
             
-        print(f"[{datetime.now()}] Validating {len(pending)} pending predictions...")
+        logger.log(f"Validating {len(pending)} pending predictions...", "INFO")
         
         for index, row in pending.iterrows():
             try:
@@ -53,7 +54,7 @@ class PredictionValidator:
                 else:
                     outcome = "NEUTRAL" # Flat
                     
-                print(f"Validated {ticker}: Entry {entry_price} -> Exit {current_price} ({outcome})")
+                logger.log(f"Validated {ticker}: Entry {entry_price} -> Exit {current_price} ({outcome})", "INFO")
                 
                 self.db.update_prediction_result(row['id'], outcome, current_price, pnl)
                 
@@ -61,4 +62,4 @@ class PredictionValidator:
                 self.db.update_strategy_stats(row['strategy'], outcome, pnl)
                 
             except Exception as e:
-                print(f"Error validating prediction {row['id']}: {e}")
+                logger.log(f"Error validating prediction {row['id']}: {e}", "ERROR")

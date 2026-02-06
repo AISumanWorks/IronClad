@@ -15,17 +15,12 @@ class DatabaseManager:
             print(" Using Remote Database (PostgreSQL)")
         else:
             # 2. Fallback to Local SQLite
-            # Check env var for path override (optional)
-            env_path = os.getenv("DB_FILE_PATH")
-            if env_path:
-                db_name = env_path
-                # Ensure directory exists for local file
-                db_dir = os.path.dirname(db_name)
-                if db_dir and not os.path.exists(db_dir):
-                    os.makedirs(db_dir, exist_ok=True)
+            # FORCE ABSOLUTE PATH to avoid CWD issues
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # go up from modules/
+            db_path = os.path.join(base_dir, "trading_bot.db")
             
-            self.database_url = f"sqlite:///{db_name}"
-            print(f" Using Local Database (SQLite): {db_name}")
+            self.database_url = f"sqlite:///{db_path}"
+            print(f" Using Local Database (SQLite): {db_path}")
 
         # Create SQLAlchemy Engine
         self.engine = create_engine(self.database_url)
@@ -251,24 +246,22 @@ class DatabaseManager:
         """
         with self.get_connection() as conn:
             # Check if exists
-            row = conn.execute(text("SELECT * FROM strategy_stats WHERE strategy = :s"), {"s": strategy}).fetchone()
+            # Explicit select for robustness
+            row = conn.execute(text("SELECT total_trades, wins, losses, win_rate, avg_pnl, trust_score FROM strategy_stats WHERE strategy = :s"), {"s": strategy}).fetchone()
             
             if not row:
                 conn.execute(text("INSERT INTO strategy_stats (strategy, trust_score) VALUES (:s, 0.5)"), {"s": strategy})
-                row = [strategy, 0, 0, 0, 0.0, 0.0, 0.5, None] # Default values
-                
-            # Current values
-            # SQLite fetchone returns tuple: (strategy, total, wins, losses, win_rate, avg_pnl, trust_score, ts)
-            # We need to map by index since using raw sql text
-            # Indices based on CREATE TABLE order:
-            # 0: strategy, 1: total, 2: wins, 3: losses, 4: win_rate, 5: avg_pnl, 6: trust_score
-            
-            total = row[1] + 1
-            wins = row[2] + (1 if outcome == 'CORRECT' else 0)
-            losses = row[3] + (1 if outcome == 'WRONG' else 0)
+                # Default values
+                total, wins, losses, win_rate, avg_pnl, trust_score = 0, 0, 0, 0.0, 0.0, 0.5
+            else:
+                total, wins, losses, win_rate, avg_pnl, trust_score = row
+
+            total = total + 1
+            wins = wins + (1 if outcome == 'CORRECT' else 0)
+            losses = losses + (1 if outcome == 'WRONG' else 0)
             
             # Rolling Average PnL (Simple approx)
-            current_avg_pnl = row[5]
+            current_avg_pnl = avg_pnl
             new_avg_pnl = ((current_avg_pnl * (total - 1)) + pnl_pct) / total
             
             win_rate = (wins / total * 100) if total > 0 else 0
@@ -298,3 +291,24 @@ class DatabaseManager:
 
     def get_strategy_stats(self):
         return pd.read_sql_query("SELECT * FROM strategy_stats ORDER BY trust_score DESC", self.engine)
+
+    def get_trade_history(self):
+        """Returns all executed trades."""
+        return pd.read_sql_query("SELECT * FROM trades ORDER BY timestamp DESC LIMIT 50", self.engine)
+
+    def reset_simulation(self):
+        """
+        Resets the database for a fresh start.
+        Clears trades, positions, predictions, stats, and resets balance.
+        """
+        with self.get_connection() as conn:
+            conn.execute(text("DELETE FROM trades"))
+            conn.execute(text("DELETE FROM positions"))
+            conn.execute(text("DELETE FROM predictions"))
+            conn.execute(text("DELETE FROM strategy_stats"))
+            
+            # Reset Balance to 1 Lakh (1,00,000)
+            conn.execute(text("UPDATE account SET balance = 100000.0, last_updated = :ts WHERE id = 1"), {"ts": datetime.now()})
+            
+            conn.commit()
+            print("✅ Database Reset Complete (Balance: 1,00,000)")

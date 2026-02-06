@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from modules.data_handler import DataHandler
 from modules.strategy_engine import StrategyEngine
+from modules.system_logger import logger # Import Logger
 import pandas as pd
 import asyncio
 from datetime import datetime
@@ -53,7 +54,39 @@ def get_account():
 
 @app.get("/api/portfolio")
 def get_portfolio():
-    return {"positions": paper_trader.get_holdings()}
+    holdings = paper_trader.get_holdings() # List of dicts
+    
+    # Enrich with Live Data
+    for p in holdings:
+        try:
+            # Fetch very brief data for latest price
+            # We use 5m because 1m might be unstable or empty depending on yfinance
+            df = data_handler.fetch_data(p['ticker'], period="1d", interval="5m")
+            
+            if not df.empty:
+                current_price = float(df['close'].iloc[-1])
+                p['current_price'] = current_price
+                
+                # Calculate P&L
+                invested = p['avg_price'] * p['qty']
+                current_value = current_price * p['qty']
+                p['pnl'] = current_value - invested
+                p['pnl_percent'] = (p['pnl'] / invested) * 100
+            else:
+                p['current_price'] = p['avg_price']
+                p['pnl'] = 0.0
+                p['pnl_percent'] = 0.0
+        except:
+             p['current_price'] = p['avg_price']
+             p['pnl'] = 0.0
+             p['pnl_percent'] = 0.0
+             
+    return {"positions": holdings}
+
+@app.get("/api/history")
+def get_trade_history():
+    """Returns past executed trades."""
+    return {"trades": paper_trader.get_history()}
 
 @app.get("/api/predictions/{ticker}")
 def get_predictions(ticker: str):
@@ -72,6 +105,11 @@ def get_brain_stats():
     if df.empty:
         return {"strategies": []}
     return {"strategies": df.to_dict(orient='records')}
+
+@app.get("/api/logs")
+def get_system_logs():
+    """Returns the latest 'thoughts' from the AI."""
+    return {"logs": logger.get_logs()}
 
 @app.post("/api/trade")
 def execute_trade(trade: TradeRequest):
@@ -162,15 +200,31 @@ def get_market_data(ticker: str, period: str = "60d", interval: str = "5m"):
         
     return {"ticker": ticker, "data": results}
 
-@app.on_event("startup")
-async def startup_event():
-    """Start the background market scanner and validator on server startup."""
-    asyncio.create_task(run_market_scanner())
-    asyncio.create_task(run_validator_loop())
-    
-    # Start Sentiment Scanner
-    tickers = data_handler.get_nifty50_tickers()
-    asyncio.create_task(run_sentiment_scanner(sentiment_engine, tickers))
+async def run_intraday_exit_loop():
+    """Checks time every minute and closes positions at 3:15 PM."""
+    loop = asyncio.get_running_loop()
+    while True:
+        now = datetime.now()
+        # IST is UTC+5:30. Ensure system time is correct or handle offset.
+        # Assuming system time is local IST (as per user context).
+        if now.hour == 15 and now.minute >= 15: # 15:15 (3:15 PM)
+             logger.log("⏰ INTRADAY EXIT: Market Closing. Squaring off all positions.", "VETO")
+             holdings = paper_trader.get_holdings()
+             for h in holdings:
+                 try:
+                     # Fetch price
+                     df = data_handler.fetch_data(h['ticker'], period="1d", interval="5m")
+                     price = float(df['close'].iloc[-1]) if not df.empty else h['avg_price']
+                     
+                     logger.log(f"📉 Squaring off {h['ticker']} at {price}", "TRADE")
+                     paper_trader.execute_trade(h['ticker'], "SELL", price, h['qty'], "intraday_exit")
+                 except Exception as e:
+                     logger.log(f"Error squaring off {h['ticker']}: {e}", "ERROR")
+             
+             # Prevent re-firing immediately (sleep until 4 PM)
+             await asyncio.sleep(3600) 
+        
+        await asyncio.sleep(60)
 
 async def run_validator_loop():
     """Background task to validate predictions every 15 minutes."""
@@ -208,6 +262,16 @@ async def run_market_scanner():
             print(f"Scanner Logic Error: {e}")
 
         await asyncio.sleep(300) 
+
+@app.on_event("startup")
+async def startup_event():
+    """Start the background market scanner and validator on server startup."""
+    asyncio.create_task(run_market_scanner())
+    asyncio.create_task(run_validator_loop()) 
+    asyncio.create_task(run_intraday_exit_loop()) # Intraday Logic
+    
+    # Start Sentiment Scanner:
+    asyncio.create_task(run_sentiment_scanner(sentiment_engine, data_handler.get_nifty50_tickers()))
 
 @app.get("/api/signals")
 def get_active_signals(strategy: str = "composite"):
@@ -308,12 +372,14 @@ def scan_market_sync():
          nifty_50 = data_handler.fetch_data('^NSEI', period="5d", interval="5m")
          if not nifty_50.empty: sector_data['^NSEI'] = nifty_50
     except Exception as e:
-         print(f"Error fetching sector indices: {e}")
+         logger.log(f"Error fetching sector indices: {e}", "ERROR")
     
     new_signals = {s: [] for s in STRATEGIES}
     
     for ticker in tickers:
         try:
+            logger.log(f"Scanning {ticker}...", "SCAN") # Log Scanning
+            
             df_5m = data_handler.fetch_data(ticker, period="5d", interval="5m")
             if df_5m.empty: continue
             
@@ -358,12 +424,12 @@ def scan_market_sync():
                                 if conf < 0.70: qty = 5
                                 elif conf > 0.90: qty = 20
                                 elif conf > 0.80: qty = 15
-                                print(f"[{datetime.now()}] 🤖 AUTO-TRADE TRIGGERED: Buying {ticker} (Conf: {conf:.2f}, Qty: {qty})")
+                                logger.log(f"🤖 AUTO-TRADE TRIGGERED: Buying {ticker} (Conf: {conf:.2f}, Qty: {qty})", "TRADE")
                                 paper_trader.execute_trade(ticker, "BUY", latest['close'], qty, "auto_ai")
                             
                             elif already_owned and signal == "SELL":
                                 current_qty = next(h['qty'] for h in holdings if h['ticker'] == ticker)
-                                print(f"[{datetime.now()}] 🤖 AUTO-TRADE TRIGGERED: Selling {ticker} (Signal: SELL, Qty: {current_qty})")
+                                logger.log(f"🤖 AUTO-TRADE TRIGGERED: Selling {ticker} (Signal: SELL, Qty: {current_qty})", "TRADE")
                                 paper_trader.execute_trade(ticker, "SELL", latest['close'], current_qty, "auto_ai")
                 except: continue
         except: continue

@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import datetime
 import time
+from modules.system_logger import logger
 
 class DataHandler:
     """
@@ -55,8 +56,16 @@ class DataHandler:
                 
                 return df
                 
+            except TypeError as te:
+                if "'NoneType' object is not subscriptable" in str(te):
+                    # Common yfinance error when data is missing upstream
+                    # print(f"Warning: Data missing for {ticker} (yfinance internal error)")
+                    time.sleep(1)
+                    continue
+                logger.log(f"Error fetching data for {ticker}: {te}", "ERROR")
+                time.sleep(1)
             except Exception as e:
-                print(f"Error fetching data for {ticker}: {e}")
+                logger.log(f"Error fetching data for {ticker}: {e}", "ERROR")
                 time.sleep(1)
         
         return pd.DataFrame()

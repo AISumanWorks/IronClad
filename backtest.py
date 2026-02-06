@@ -41,6 +41,8 @@ class Backtester:
             overall_data_5m[ticker] = test_data
             overall_data_1h[ticker] = df_1h
             
+        self.market_data = overall_data_5m # Make accessible to square_off_all
+        
         print(f"\n--- Starting Simulation on {len(overall_data_5m)} Tickers ---")
         
         # Simulation requires aligning timestamps across all tickers
@@ -118,6 +120,11 @@ class Backtester:
                     if signal:
                         self.open_position(ticker, signal, price, atr, current_time)
 
+        # End of Simulation Force Close
+        if self.active_positions:
+            print("Force closing remaining positions at end of simulation...")
+            self.square_off_all(timeline[-1], "End of Simulation")
+
         self.print_performance()
 
     def open_position(self, ticker, signal, price, atr, time):
@@ -165,29 +172,24 @@ class Backtester:
         # print(f"[{time}] CLOSE {ticker} @ {price:.2f} | PnL: {pnl:.2f} | {reason}")
 
     def square_off_all(self, time, reason):
-        # Create a list of keys to avoid runtime error during iteration
+        """Force closes all active positions."""
         active_tickers = list(self.active_positions.keys())
         for ticker in active_tickers:
-            # We don't have the current price in this method signature easily available
-            # We will use the 'close' price of the candle that triggered the square off
-            # In a real engine, we'd fetch latest tick.
-            # Workaround: Pass price or access last known.
-            # For backtest, we might skip precise price here or need to fetch it.
-            # Simple hack: use stored entry price (0 PnL) or fetch from data handler?
-            # Better: The loop calling this has the `row` context only for specific ticker.
-            # We can't close ALL efficiently without price data for ALL.
-            # compromise: Leave open until next ticker loop iteration? 
-            # No, 'Square off all' must happen. 
-            pass 
-            # To fix: The caller loop should handle checking square-off condition per ticker.
-            # My logic in `run` loop:
-            # `if self.risk_manager.must_square_off...: continue`
-            # This skips processing! It needs to logic: "If must square off, close Any Active Position for this ticker".
-            # Currently the global check `must_square_off` skips everything.
-        
-        # Correction in run loop logic:
-        # Instead of `continue`, we should enter a "Close only" mode.
-        pass
+            # Check price from market data
+            price = 0.0
+            if hasattr(self, 'market_data') and ticker in self.market_data:
+                df = self.market_data[ticker]
+                # Try to get price at 'time', or last known
+                if time in df.index:
+                    price = df.loc[time]['close']
+                else:
+                    # Fallback to last row if time mismatches
+                    price = df.iloc[-1]['close']
+            else:
+                # If no data found, use entry price (scratch trade) to avoid errors
+                price = self.active_positions[ticker]['entry_price']
+                
+            self.close_position(ticker, price, time, reason)
 
     def print_performance(self):
         print("\n" + "="*40)

@@ -21,9 +21,10 @@ class StrategyEngine:
     def __init__(self):
         self.models = {} # Dictionary to hold models per ticker
         self.scalers = {} # Dictionary to hold scalers per ticker (Critical for NN)
-        self.imputer = SimpleImputer(strategy='mean')
         self.min_training_samples = 100
         self.db = DatabaseManager()
+        from modules.system_logger import logger # Lazy import to avoid circular dependency if any
+        self.logger = logger
         
     def add_indicators(self, df: pd.DataFrame):
         """Adds technical indicators to the dataframe using pure pandas."""
@@ -260,9 +261,9 @@ class StrategyEngine:
         try:
              mlp.fit(X_scaled, y)
              self.models[ticker] = mlp
-             # print(f"[{ticker}] Neural Network Trained. Loss: {mlp.loss_:.4f}")
+             # self.logger.log(f"[{ticker}] Neural Network Trained. Loss: {mlp.loss_:.4f}", "INFO")
         except Exception as e:
-             # print(f"NN Training failed for {ticker}: {e}")
+             self.logger.log(f"NN Training failed for {ticker}: {e}", "ERROR")
              self.models[ticker] = None
 
     def get_ml_confidence(self, ticker: str, current_features: pd.DataFrame):
@@ -462,8 +463,6 @@ class StrategyEngine:
              
         return None
 
-        return None
-
     def strategy_bollinger(self, df_5m):
         """
         Bollinger Band Squeeze/Breakout.
@@ -631,7 +630,7 @@ class StrategyEngine:
         # If Sentiment is Very Negative, VETO BUY.
         # If Sentiment is Very Positive, VETO SELL (optional, but let's be safe).
         if sentiment_score < -0.2 and signal == 'BUY':
-             print(f"[{ticker}] BUY Vetoed: Negative Sentiment ({sentiment_score:.2f})")
+             self.logger.log(f"[{ticker}] BUY Vetoed: Negative Sentiment ({sentiment_score:.2f})", "VETO")
              signal = None
         elif sentiment_score > 0.2 and signal == 'SELL':
              # print(f"[{ticker}] SELL Vetoed: Positive Sentiment ({sentiment_score:.2f})")
@@ -648,7 +647,7 @@ class StrategyEngine:
         if df_1d is not None and not df_1d.empty:
             macro_trend = self.check_macro_trend(df_1d)
             if macro_trend == 'BEARISH' and signal == 'BUY':
-                print(f"[{ticker}] Trade filtered by MACRO TREND (Daily Bearish)")
+                self.logger.log(f"[{ticker}] Trade filtered by MACRO TREND (Daily Bearish)", "VETO")
                 signal = None
             elif macro_trend == 'BULLISH' and signal == 'SELL':
                 pass
@@ -666,16 +665,16 @@ class StrategyEngine:
                     m_di = df_5m['Minus_DI'].iloc[-1]
                     trend_dir = "UP" if p_di > m_di else "DOWN"
                     if trend_dir == "UP" and signal == "SELL":
-                        print(f"[{ticker}] SELL Signal vetoed by Strong Bull Trend (ADX {current_adx:.1f})")
+                        self.logger.log(f"[{ticker}] SELL Signal vetoed by Strong Bull Trend (ADX {current_adx:.1f})", "VETO")
                         signal = None
                     elif trend_dir == "DOWN" and signal == "BUY":
-                        print(f"[{ticker}] BUY Signal vetoed by Strong Bear Trend (ADX {current_adx:.1f})")
+                        self.logger.log(f"[{ticker}] BUY Signal vetoed by Strong Bear Trend (ADX {current_adx:.1f})", "VETO")
                         signal = None
                         
             elif regime == 'RANGING':
                 if strategy_type in ['supertrend', 'macd', 'ma_crossover']:
                     # Trend following dies in chop.
-                    print(f"[{ticker}] Trend Strategy ({strategy_type}) filtered by CHOPPY Market (ADX {current_adx:.1f})")
+                    self.logger.log(f"[{ticker}] Trend Strategy ({strategy_type}) filtered by CHOPPY Market (ADX {current_adx:.1f})", "VETO")
                     signal = None
 
         # --- PHASE 4.2: SECTOR CORRELATION FILTER ---
