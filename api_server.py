@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from modules.data_handler import DataHandler
 from modules.strategy_engine import StrategyEngine
@@ -48,9 +49,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+
+
 @app.get("/api/health")
 def health_check():
     return {"status": "online", "time": datetime.now()}
+
+@app.get("/health", response_class=PlainTextResponse)
+def health_check_plain():
+    return "Server is running"
 
 @app.get("/api/account")
 def get_account():
