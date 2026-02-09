@@ -383,6 +383,21 @@ def scan_market_sync():
             df_5m = data_handler.fetch_data(ticker, period="5d", interval="5m")
             if df_5m.empty: continue
             
+            # --- STALE DATA CHECK (Market Closed Guard) ---
+            # If data is older than 20 mins, market is likely closed. 
+            # Don't generate fake signals on old candles.
+            last_candle_time = df_5m.index[-1]
+            if last_candle_time.tzinfo is None:
+                # Localize if naive (assume local time/IST)
+                last_candle_time = last_candle_time.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            
+            # Compare with current time (aware)
+            now = datetime.now().astimezone()
+            
+            if (now - last_candle_time).total_seconds() > 1200: # 20 minutes
+                # logger.log(f"Skipping {ticker}: Data stale (Last: {last_candle_time.strftime('%H:%M')})", "DEBUG")
+                continue
+            
             if strategy_engine.models.get(ticker) is None:
                 strategy_engine.train_model(ticker, df_5m)
 
