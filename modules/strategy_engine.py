@@ -688,14 +688,16 @@ class StrategyEngine:
         confidence = self.get_ml_confidence(ticker, features_now)
         
         # Log to DB for "Learning from Mistakes"
-        try:
-             # We assume 'predicted_price' here is just the confidence score for now, 
-             # or we could make a dummy price projection: Price * (1 + (Conf-0.5)/100)
-             # Let's log confidence directly.
-             self.db.log_prediction(ticker, float(confidence), float(latest['close']), float(confidence), strategy_type)
-        except Exception as e:
-             # print(e)
-             pass
+        if signal:
+             try:
+                 # We assume 'predicted_price' here is just the confidence score for now, 
+                 # or we could make a dummy price projection: Price * (1 + (Conf-0.5)/100)
+                 # Let's log confidence directly.
+                 # Updated to include SIDE (signal)
+                 self.db.log_prediction(ticker, float(confidence), float(latest['close']), float(confidence), strategy_type, side=signal)
+             except Exception as e:
+                 # print(e)
+                 pass
 
         if signal:
             # Using a slightly looser threshold for trend strategies, tighter for reversion?

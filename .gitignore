@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.DS_Store
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+web_ui/node_modules/
+web_ui/dist/
+
+# Logs
+*.log

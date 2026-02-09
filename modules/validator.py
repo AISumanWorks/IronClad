@@ -40,11 +40,14 @@ class PredictionValidator:
                     
                 entry_price = row['actual_price'] # Price at prediction time
                 
-                # Logic: Did it go up? (Assuming all predictions are Long/Buy for now as per strategy)
-                # If we had Short signals, we'd need 'side' in prediction table or strategy info.
-                # Assuming BUY for now.
-                
-                pnl = (current_price - entry_price) / entry_price
+                # Check Side (Default to BUY for legacy data)
+                side = row.get('side', 'BUY') 
+                if side is None: side = 'BUY'
+
+                if side == 'BUY':
+                    pnl = (current_price - entry_price) / entry_price
+                else: # SELL
+                    pnl = (entry_price - current_price) / entry_price
                 
                 outcome = "WRONG"
                 if pnl > 0.001: # > 0.1% profit (Breakeven + fees roughly)
@@ -54,7 +57,7 @@ class PredictionValidator:
                 else:
                     outcome = "NEUTRAL" # Flat
                     
-                logger.log(f"Validated {ticker}: Entry {entry_price} -> Exit {current_price} ({outcome})", "INFO")
+                logger.log(f"Validated {ticker} ({side}): Entry {entry_price} -> Exit {current_price} ({outcome})", "INFO")
                 
                 self.db.update_prediction_result(row['id'], outcome, current_price, pnl)
                 
