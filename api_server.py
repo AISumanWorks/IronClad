@@ -20,6 +20,10 @@ paper_trader = PaperTrader()
 from modules.sentiment_engine import SentimentEngine, run_sentiment_scanner
 sentiment_engine = SentimentEngine()
 
+# Initialize Notification Manager
+from modules.notification_manager import NotificationManager
+notification_manager = NotificationManager()
+
 class TradeRequest(BaseModel):
     ticker: str
     action: str # BUY / SELL
@@ -428,6 +432,15 @@ def scan_market_sync():
                             "timestamp": datetime.now().isoformat(), "strategy": strategy
                         }
                         new_signals[strategy].append(sig_obj)
+
+                        # --- TELEGRAM ALERT ---
+                        # Only alert for Composite strategy (High Quality) or High Confidence
+                        if strategy == 'composite' and conf > 0.6:
+                             # Run in try/except to not crash scanner
+                             try:
+                                 notification_manager.send_signal_alert(sig_obj)
+                             except Exception as e:
+                                 logger.log(f"Alert Error: {e}", "ERROR")
 
                         # --- AUTO-TRADING ENGINE ---
                         if strategy == 'composite' and conf > 0.60:
